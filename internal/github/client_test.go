@@ -254,3 +254,24 @@ func TestBuildSearchSpecsTreatsQueryAsFourthORCondition(t *testing.T) {
 		t.Fatalf("specs = %+v, want only custom query", specs)
 	}
 }
+
+func TestOnlyNotFoundErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"partial data with not found", `{"data":{"r0":{"pr":null},"r1":{"pr":{"id":"PR_1"}}},"errors":[{"type":"NOT_FOUND","path":["r0","pr"],"message":"Could not resolve to a PullRequest with the number of 8105."}]}`, true},
+		{"other error type", `{"data":{"r0":null},"errors":[{"type":"NOT_FOUND"},{"type":"FORBIDDEN"}]}`, false},
+		{"rate limited without type", `{"data":{"r0":null},"errors":[{"message":"API rate limit exceeded"}]}`, false},
+		{"null data", `{"data":null,"errors":[{"type":"NOT_FOUND"}]}`, false},
+		{"no errors", `{"data":{"r0":null}}`, false},
+		{"not json", `gh: something failed`, false},
+		{"empty", ``, false},
+	}
+	for _, tc := range cases {
+		if got := onlyNotFoundErrors([]byte(tc.body)); got != tc.want {
+			t.Errorf("%s: onlyNotFoundErrors = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

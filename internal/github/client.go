@@ -671,7 +671,9 @@ func (c *Client) fetchIncludedPullRequests(ctx context.Context, parentsByCandida
 		return nil, nil
 	}
 	var response batchPullRequestResponse
-	if err := c.graphql(ctx, "batch get included pull requests", query, nil, &response); err != nil {
+	// Candidates come from commit messages, so a number may point at an issue or
+	// another repository's pull request. Those resolve to NOT_FOUND and are skipped.
+	if err := c.graphqlRequest(ctx, "batch get included pull requests", query, nil, &response, true); err != nil {
 		return nil, err
 	}
 	result := map[string][]graph.IncludedPullRequest{}
@@ -859,7 +861,32 @@ func isReReviewRequested(raw rawPR, viewer string) bool {
 	return !latestReview.IsZero() && latestRequest.After(latestReview)
 }
 
-func (c *Client) graphql(ctx context.Context, operation, query string, variables map[string]string, target any) (resultErr error) {
+func (c *Client) graphql(ctx context.Context, operation, query string, variables map[string]string, target any) error {
+	return c.graphqlRequest(ctx, operation, query, variables, target, false)
+}
+
+// onlyNotFoundErrors reports whether a GraphQL response carries data and every
+// error is NOT_FOUND. gh exits non-zero for such a response but still prints it.
+func onlyNotFoundErrors(out []byte) bool {
+	var body struct {
+		Data   json.RawMessage
+		Errors []struct{ Type string }
+	}
+	if err := json.Unmarshal(out, &body); err != nil {
+		return false
+	}
+	if len(body.Data) == 0 || string(body.Data) == "null" || len(body.Errors) == 0 {
+		return false
+	}
+	for _, item := range body.Errors {
+		if item.Type != "NOT_FOUND" {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Client) graphqlRequest(ctx context.Context, operation, query string, variables map[string]string, target any, allowNotFound bool) (resultErr error) {
 	args := []string{"api", "graphql"}
 	if c.Hostname != "" {
 		args = append(args, "--hostname", c.Hostname)
@@ -896,7 +923,7 @@ func (c *Client) graphql(ctx context.Context, operation, query string, variables
 		}
 		commandSpan.End(err, oteltrace.Attributes{"process.pid": processID, "process.exit.code": exitCode})
 	}
-	if err != nil {
+	if err != nil && !(allowNotFound && onlyNotFoundErrors(out)) {
 		return fmt.Errorf("GitHub API: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	if err := json.Unmarshal(out, target); err != nil {
